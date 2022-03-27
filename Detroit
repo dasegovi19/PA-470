@@ -1,0 +1,995 @@
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+```
+
+
+```{r}
+#Packages
+library(tidyverse)
+library(lubridate)
+library(readxl)
+library(tidymodels)
+library(kableExtra)
+library(scales)
+library(devtools)
+library(ggResidpanel) # diagnostic plots
+
+library(tigris) # census
+library(tidycensus) #census
+library(leaflet) # map
+library(mapview)
+library(sf)
+library(htmlwidgets)
+library(htmltools)
+
+
+#devtools::install_github("gavinrozzi/zipcodeR")
+library(zipcodeR)
+
+library(corrplot) # correlation plots
+library(RColorBrewer) # correlation plots
+
+```
+
+
+
+
+
+```{r}
+#Data-sets: create variables
+
+#example connection to database. download the database from onedrive
+con <- DBI::dbConnect(RSQLite::SQLite(), "detroit.sqlite")
+
+detroitdata <- read_excel("OFFICE OF THE ASSESSORS_PROPERTY CLASSIFICATIONS -rev.xlsx") # property code classifications
+
+#Create variable for sales
+
+sales <- dplyr::tbl(con, 'sales') %>% dplyr::collect() %>%
+  mutate(sale_date = ymd(sale_date)) %>%
+  mutate(SALE_YEAR = str_sub(sale_date, 1,4)) %>%
+    mutate(SALE_YEAR = as.character(SALE_YEAR))
+
+
+
+# create assessments variable
+assessments <- dplyr::tbl(con, 'assessments') %>% dplyr::collect() %>%
+  mutate(year = as.character(year))
+
+
+# parcels
+parcels <- dplyr::tbl(con, 'parcels')  %>% dplyr::collect()
+
+parcels <- parcels %>% select(c(parcel_number, ward, zip_code, total_square_footage, total_acreage, frontage, depth, homestead_pre, is_improved, num_bldgs, total_floor_area, year_built)) # only select variables I think is relevant
+
+
+
+
+# create foreclosure variable, clean it up
+
+foreclosures <- dplyr::tbl(con, 'foreclosures')  %>% dplyr::collect() %>%
+  pivot_longer(cols = 3:20,
+               names_to = "Year", 
+               values_to = "Foreclosures") %>% 
+  filter(Year > 2010) %>%
+    mutate(Year = as.character(Year)) %>%
+  mutate(Foreclosures = replace_na(Foreclosures,0)) 
+
+
+```
+
+
+
+
+```{r}
+
+
+
+# merge property code with sales: 276,550 x 8
+sales_code <- left_join(sales, detroitdata, by = c("property_c" = "CODE"))
+
+
+# merge sales + code with parcels property characteristics
+sales_code_parcels <- left_join(sales_code, parcels, by = c("parcel_num" = "parcel_number"))
+
+
+
+
+# merge sales + code + parcel characteristics with foreclosure
+sales_code_parcels_foreclosures <- left_join(sales_code_parcels, foreclosures, by = c("parcel_num"  = "prop_parcelnum", "SALE_YEAR" = "Year")) #276, 554
+
+
+
+
+# merge sales + property code + parcel characteristics + foreclosures with assessments
+final_sales <- left_join(sales_code_parcels_foreclosures, assessments, by = c("parcel_num" = "PARCELNO", "SALE_YEAR" = "year", "property_c" = "propclass"))
+
+
+
+```
+
+
+
+```{r}
+#Filter out, also replace na's in foreclosures and make this a factor
+
+#I will filter sales to include class 401, valid arms length, above $4000 price, assessed over $2,000
+
+
+final_sales$sale_terms <- toupper(final_sales$sale_terms) # make everything upper, filter out VALID ARMS LENGTH
+
+final_sales <- final_sales %>%
+  filter(sale_terms == "VALID ARMS LENGTH",
+         property_c == "401",
+         ASSESSEDVALUE > 2000,
+         sale_price > 4000) %>% # 40,000 obs 
+ mutate(Foreclosures = replace_na(Foreclosures,0))  %>%
+    mutate(Foreclosures = as.factor(Foreclosures))  # make factor
+
+
+
+
+
+
+```
+
+
+
+
+
+
+
+```{r}
+# sales ratio study: assessed value divided by sales price
+
+final_sales$SALE_YEAR <- as.double(final_sales$SALE_YEAR)
+
+
+
+salesratio <-
+  cmfproperty::reformat_data(
+    data = final_sales, 
+    sale_col = "sale_price",
+    assessment_col = "ASSESSEDVALUE",
+    sale_year_col = "SALE_YEAR",
+  )
+
+
+
+stats <- cmfproperty::calc_iaao_stats(salesratio)
+
+
+iaao_detroit <- cmfproperty::iaao_graphs(
+  stats, 
+  salesratio,
+  min_reporting_yr = 2011,
+  max_reporting_yr = 2020,
+  jurisdiction_name = "Detroit, Michigan"
+)
+
+
+
+output <- cmfproperty::diagnostic_plots(stats,
+                           salesratio,
+                           min_reporting_yr = 2011,
+                           max_reporting_yr = 2020)
+
+
+
+
+final_sales = salesratio
+
+#cmfproperty::make_report(salesratio,jurisdiction_name = "Detroit, Michigan")
+
+
+
+
+```
+
+
+
+
+
+
+
+# Part B 
+
+Feature engineering. You have now created two base models and evaluation metrics from last week. Investigate creating at least two new predictors and analyze if they improve your model. Some possibilities:
+
+Neighborhood foreclosures/blight tickets * 
+
+
+
+
+```{r}
+# add in blight
+blight <- dplyr::tbl(con, 'blight') %>% dplyr::collect() %>% 
+    group_by(parcelno) %>% 
+  summarize(TotalnumberOfTickets = n(), na.rm=TRUE) %>%
+  select(-na.rm)
+
+
+
+
+final_sales <-  left_join(final_sales, blight, by = c("parcel_num" = "parcelno"))
+  
+
+final_sales <- final_sales %>% mutate(TotalnumberOfTickets = replace_na(TotalnumberOfTickets, 0)) # switch na to 0
+
+
+
+
+
+```
+
+
+
+
+
+
+
+Census variables (such as income, race) * 
+
+
+```{r}
+# add in income/race
+
+acs <- load_variables(2019, "acs5") # American Community Survey
+
+
+michigan2019 <- get_acs(geography = 'zcta', 
+                       variables = c(medianincome = "B19013_001",
+                                      totalpopulation = "B02001_001",
+                                     white_alone = "B02001_002"),
+                       state = "MI",
+                       year = 2019,
+                       output = 'wide')
+
+
+
+michigan2019  <- michigan2019 %>%
+  mutate(
+    percent_white = (white_aloneE/totalpopulationE)*100
+  ) %>%
+  mutate(percent_nonwhite = (100-percent_white)) %>%
+  select(GEOID, medianincomeE, percent_white, percent_nonwhite)
+
+
+
+
+
+
+# merge
+final_sales <- left_join(final_sales, michigan2019, by = c("zip_code" = "GEOID"))
+
+
+  
+
+```
+
+```{r}
+ #classification metric for 2016
+final_sales2016 <- final_sales %>%
+    filter(SALE_YEAR == "2016")
+  
+
+  
+final_sales2016 <- final_sales2016 %>%
+  mutate(overassessed= if_else(RATIO > median(final_sales2016$RATIO), "yes", "no")) %>% # classification
+  mutate(overassessed = factor(overassessed))  #make over-assessed a factor
+
+```
+
+
+
+
+
+# Part C (20%)
+
+Prediction. Create out of sample predictions for both models. By this, predict over-assessment and assessment/valuation for homes which did not sell for each model (2016 for B, 2019 for C).
+
+
+
+
+
+
+```{r}
+
+
+
+# merge assessments with parcels property characteristics
+assessments <- left_join(assessments, parcels, by = c("PARCELNO" = "parcel_number"))
+
+# merge assessments with foreclosure
+assessments <- left_join(assessments, foreclosures, by = c("PARCELNO"  = "prop_parcelnum", "year" = "Year")) #276, 554
+assessments <- assessments %>%
+    mutate(Foreclosures = replace_na(Foreclosures,0))  # make foreclosures 0
+assessments$Foreclosures <- as.factor(assessments$Foreclosures) # make factor to merge later
+
+
+
+# merge assessments with census variables: median income and race in zip code
+
+assessments <- left_join(assessments, michigan2019, by = c("zip_code" = "GEOID"))
+
+# merge assessments with blights
+
+# add in blight
+blight <- dplyr::tbl(con, 'blight') %>% dplyr::collect() %>% 
+    group_by(parcelno) %>% 
+  summarize(TotalnumberOfTickets = n(), na.rm=TRUE) %>%
+  select(-na.rm)
+
+assessments <-  left_join(assessments, blight, by = c("PARCELNO" = "parcelno"))
+  
+
+assessments <- assessments %>% mutate(TotalnumberOfTickets = replace_na(TotalnumberOfTickets, 0)) # switch na to 0
+
+
+
+
+```
+
+
+
+```{r}
+#Now, let's find the homes that sold and left join it with assessments. Then, filter out na values for sale price so we only focus on the homes that didn't sell.
+
+
+# merge with sale price
+                
+final_sales_filtered =  final_sales %>%
+  select(parcel_num, SALE_PRICE, SALE_YEAR) # filter out just the sale price and year for each parcel
+
+
+# make year double for assessments to merge
+assessments$year <- as.double(assessments$year)
+
+# 2,451,390
+
+
+assessments = left_join(assessments, final_sales_filtered, by = c("PARCELNO" = "parcel_num", "year" = "SALE_YEAR"))
+
+
+final_unsold <- 
+assessments %>% 
+  filter(is.na(SALE_PRICE), propclass == "401") # filter out the price with only na values for sale_price. In other words, homes that didn't sell
+
+
+
+```
+
+
+
+# out of sample prediction: model B, classification
+
+
+# classification metric for 2016
+
+
+
+```{r,include=FALSE}
+
+final_unsold2016 <- final_unsold   %>%
+    filter(year == "2016") 
+
+
+```
+
+
+
+
+```{r}
+
+
+
+group <- rsample::initial_split(final_sales2016) 
+train <- training(group)
+test <- testing(group)
+
+
+#validation for sales
+
+assessment_folds_mini <- 
+   vfold_cv(train, repeats=1, v=3) # split into folds of 3.
+
+
+logistic_model <- 
+  logistic_reg(penalty = 0.1) %>%
+  set_engine('glm') %>%
+  set_mode('classification')
+
+
+### recipe
+overassessed_rec <- recipe(overassessed ~ total_square_footage + is_improved + total_floor_area + year_built + Foreclosures  + TotalnumberOfTickets + medianincomeE + percent_nonwhite, data = train) %>% 
+  
+  #step_mutate(ward = factor(ward))           # factor variable for ward
+
+  
+  step_mutate(is_improved = factor(is_improved)) %>%       # factor variable for is improved
+  
+  step_mutate(Foreclosures = factor(Foreclosures)) %>%       # factor variable for foreclosure
+
+  
+  step_dummy(all_nominal_predictors()) %>%       #converts categorical to dummy variables.
+  
+ step_unknown(all_nominal_predictors())  %>%   # sets missing values in factors as unknown. 
+  
+    step_corr(all_predictors()) # drops predictors which are highly correlated with each other 
+
+
+
+
+### recipe
+
+overassessed_workflow <- 
+  workflow() %>%
+  add_model(logistic_model) %>%
+  add_recipe(overassessed_rec)
+
+
+
+
+overassessed_fit <- overassessed_workflow %>%
+  fit(data = train)
+
+
+
+sold_overassessed_preds <- 
+  augment(overassessed_fit, test, new_data = test)
+
+
+unsold_overassessed_preds <-
+  augment(overassessed_fit, final_unsold2016)
+ 
+
+
+```
+
+
+
+
+
+
+
+
+# out of sample prediction: model C, predict price value
+
+
+Filter out assessments for 2019, find total # of homes in 2019 
+
+```{r,include=FALSE}
+
+final_unsold2019 <- final_unsold  %>%
+  filter(year == "2019")    #343,680 homes didn't sell
+
+
+
+
+```
+
+
+
+```{r,include=FALSE}
+
+
+
+group2 <- rsample::initial_split(final_sales2019)
+train2 <- training(group2)
+test2 = testing(group2)
+
+
+assessment_folds_mini2 <- 
+   vfold_cv(train, repeats=1, v=3) # split into folds of 3.
+
+
+
+tree_model <-
+  parsnip::decision_tree(tree_depth=5) %>%
+  set_engine("rpart") %>%
+  set_mode('regression') # after splitting down, you can take average and gives you prediction based on where the bucket is
+
+
+
+
+price_rec <- recipe(SALE_PRICE ~ total_square_footage + is_improved + total_floor_area + year_built + Foreclosures  + TotalnumberOfTickets + medianincomeE + percent_nonwhite, data = train2) %>% 
+  
+  #step_mutate(ward = factor(ward))            # factor variable for ward
+  
+  step_mutate(is_improved = factor(is_improved)) %>%       # factor variable for is improved
+  
+   step_mutate(Foreclosures = factor(Foreclosures)) %>%       # factor variable for foreclosure
+
+  
+  step_dummy(all_nominal_predictors()) %>%       #converts categorical to dummy variables.
+  
+ step_unknown(all_nominal_predictors())  %>%   # sets missing values in factors as unknown. 
+  
+    step_corr(all_predictors()) # drops predictors which are highly correlated with each other 
+
+
+
+price_workflow <-
+  workflow() %>%
+  add_model(tree_model) %>%
+  add_recipe(price_rec)
+
+price_fit <- price_workflow %>%
+  fit(data=train2)
+
+
+sold_price_preds <- 
+  augment(price_fit, test2)
+
+unsold_price_preds <-
+  augment(price_fit, final_unsold2019)
+
+
+
+tree_fit <- price_fit  %>% 
+  extract_fit_engine()
+
+
+
+
+
+
+```
+
+
+
+
+
+
+
+# Part D (40%) Model Explanation. Each model has different tools for explainability and we will discuss this more in class. Undertake this initial work knowing that we will gain more techniques for this later on.
+
+# For Model B/overassessment, aggregate your predictions by census tract. Join in a census variable. Create a simple correlation plot and leaflet map of likelihood of over-assessment by tract using the template for class.
+
+
+
+
+
+
+
+
+```{r,include=FALSE}
+
+# we can only extract census tracts for 4 zip codes at a time
+# I am excluding these zip codes because I can't get census tracts for them since they have more than 5 numbers
+# "48207-5158" 2 obs
+#"48207-3602" 1 obs
+#"48206-2323" 1 obs
+#"48226-1013" 1 obs
+#"48214-1854" 1 obs
+#"48204-3107" 1 obs
+#"48223-2173" 1 obs
+#"48235-1546" 1 obs
+#"48224-2041" 1 obs
+
+
+detroit_tracts1 <- get_tracts(c("48216", "48208", "48206", "48238"))
+
+detroit_tracts2 <- get_tracts(c("48210", "48200", "48207",  "48215"))
+
+detroit_tracts3 <- get_tracts(c( "48228", "48227", "48223", "48201"))
+
+detroit_tracts4 <- get_tracts(c("48202", "48203", "48214", "48204"))
+
+detroit_tracts5 <- get_tracts(c("48234", "48219", "48205", "48211"))
+
+detroit_tracts6 <- get_tracts(c("48212", "48236", "48224", "48209"))
+
+detroit_tracts7 <- get_tracts(c("48217", "48235" , "48213", "48237"))
+
+detroit_tracts8 <- get_tracts(c( "48221","48239", "48226", "48240"))
+
+detroit_tracts9 <- get_tracts(c("48225", "48218", "84227"))
+
+
+detroit_tracts <- full_join(detroit_tracts1, detroit_tracts2)
+detroit_tracts <- full_join(detroit_tracts, detroit_tracts3)
+detroit_tracts <- full_join(detroit_tracts, detroit_tracts4)
+detroit_tracts <- full_join(detroit_tracts, detroit_tracts5)
+detroit_tracts <- full_join(detroit_tracts, detroit_tracts6)
+detroit_tracts <- full_join(detroit_tracts, detroit_tracts7)
+detroit_tracts <- full_join(detroit_tracts, detroit_tracts8)
+detroit_tracts <- full_join(detroit_tracts, detroit_tracts9) 
+detroit_tracts <- detroit_tracts %>% select(-GEOID)
+
+```
+
+
+ 
+```{r,include=FALSE}
+# Merge tracts with overassessment predictions for homes that didn't sell in 2016
+
+unsold_overassessed_preds = left_join(unsold_overassessed_preds, detroit_tracts, by = c("zip_code" = "ZCTA5"))
+
+
+
+
+```
+
+
+```{r,include=FALSE}
+
+likelihood_overassessment= unsold_overassessed_preds %>%
+  group_by(TRACT) %>%
+  summarize(likelihood_percent = mean(.pred_yes, na.rm=TRUE))
+
+likelihood_overassessment <- na.omit(likelihood_overassessment) # remove last observation, which is NA
+
+
+
+
+
+```
+
+
+
+
+
+Leaflet
+
+```{r,include=FALSE}
+
+
+
+mi19 <- get_acs(geography = "tract", 
+              variables = c(medincome = "B19013_001",
+                            totalpop = "B02001_001",
+                            white_alone = "B02001_002",
+                            black_alone = "B02001_003",
+                            asian_alone = "B02001_004"),
+              state = "MI", 
+              year = 2019,
+              output='wide')
+
+
+
+
+mi19 <- mi19 %>% mutate(
+  pct_white = white_aloneE / totalpopE,
+  pct_black = black_aloneE / totalpopE,
+  pct_asian = asian_aloneE / totalpopE
+)
+
+
+
+mitracts <- tigris::tracts(state='26', year=2019, cb=TRUE)
+
+wayne_tracts <- mitracts %>% left_join(
+  mi19 %>% select(GEOID, pct_white, totalpopE, medincomeE)
+) %>% filter(COUNTYFP == '163') #wayne
+
+
+
+micountysub <- tigris::county_subdivisions(state=26, county=163, cb=TRUE) 
+
+detroit <- micountysub %>% filter(NAME == "Detroit") %>% select(region=NAME)
+
+
+detroit_tracts <- wayne_tracts %>% st_intersection(
+  detroit
+)
+
+
+
+
+detroit_tracts$GEOID <- gsub("^.{0,5}", "", detroit_tracts$GEOID) # remove first 5 numbers in each census tract so we can merge
+
+
+
+# merge with over-assessment data
+
+detroit_tracts = left_join(detroit_tracts, likelihood_overassessment,  by = c("GEOID" = "TRACT"))
+
+
+
+
+
+pal1 <-
+  colorNumeric(
+    palette = "Blues",
+    domain = detroit_tracts$likelihood_percent,
+    na.color = "Grey"
+  )
+
+
+
+label_str <- str_glue("<strong>Tract %s</strong><br>Likelihood of Over-assessment (Pct): %s<br/>")
+
+labels <- sprintf(label_str,
+                detroit_tracts$NAME,
+                percent(detroit_tracts$likelihood_percent, accuracy = .1)) %>% 
+  lapply(htmltools::HTML)
+
+
+
+
+
+
+
+
+
+
+
+
+
+```
+
+
+
+```{r}
+leaflet() %>%
+  addTiles() %>% addPolygons(
+    data = detroit_tracts,
+    fillColor = ~ pal1(likelihood_percent),
+    weight = 0.5,
+    opacity = 0.5,
+    color = "white",
+    dashArray = 3,
+    fillOpacity = 0.7,
+    highlight = highlightOptions(
+      weight = 5,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 0.7,
+      bringToFront = TRUE
+    ),
+    label = labels,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto"
+    )
+  ) %>%
+  addLegend(
+    pal = pal1,
+    values = detroit_tracts$likelihood_percent,
+    opacity = 0.7,
+    title = "Legend",
+    position = "bottomright"
+  ) 
+
+
+
+```
+
+
+
+
+
+
+```{r}
+# Correlation plot
+
+
+filtered_correlation = assessments_2016final %>%
+  select(.pred_yes, total_square_footage, total_acreage, frontage, depth, medianincomeE, percent_nonwhite) %>% 
+  na.omit(.pred_yes)
+
+
+correlation <-cor(filtered_correlation)
+
+
+
+
+corrplot(correlation, type="upper", order="hclust",
+         col=brewer.pal(n=8, name="RdYlBu"))
+
+```
+
+
+
+*Very strong positive correlation between probability of getting over-assessed and the percent nonwhite in the parcel's zip code. There is also a moderate, negative correlation between probability of over-assessment and median income*
+
+
+
+# For Model C/assessment, undertake an initial analysis of which factors your model identified as most important for valuation.
+
+
+
+```{r}
+options(scipen = 100)
+rpart.plot::rpart.plot(tree_fit)
+
+
+```
+
+*The most important factors for assessing properties is whether the property is located in ward 2. if it is, and the house has been improved, then the assessment is 692. If it has not been improved, another important factor is the total square footage followed by total floor area.*
+
+
+
+
+
+# New Assessment models
+
+
+```{r}
+linear_reg_spec <- 
+   linear_reg(penalty = tune(), mixture = tune()) %>% 
+   set_engine("glmnet")
+   
+#rf_spec <- 
+   #rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  # set_engine("ranger") %>% 
+  # set_mode("regression")
+# random_forest = rf_spec
+   
+#xgb_spec <- 
+   #boost_tree(tree_depth = tune(), learn_rate = tune(), loss_reduction = tune(), 
+     #         min_n = tune(), sample_size = tune(), trees = tune()) %>% 
+   #set_engine("xgboost") %>% 
+   #set_mode("regression")
+   #boosted = xgb_spec
+
+#svm_r_spec <- 
+   #svm_rbf(cost = tune(), rbf_sigma = tune()) %>% 
+   #set_engine("kernlab") %>% 
+   #set_mode("regression")
+   #SVM_radial = svm_r_spec
+
+#knn_spec <- 
+ #  nearest_neighbor(neighbors = tune(), dist_power = tune(), weight_func = tune()) %>% 
+ #  set_engine("kknn") %>% 
+ #  set_mode("regression")
+ #KNN = knn_spec
+
+
+
+   
+my_set <- workflow_set(
+  preproc =  list(normalized = assess_rec), 
+  models = list(linear_reg = linear_reg_spec)
+)
+
+
+
+
+
+```
+
+
+Note that I’ve included verbose = TRUE here to help you debug, please do not include this output in your final project!!
+
+```{r}
+library(xgboost)
+library(kernlab)
+
+grid_ctrl <-
+   control_grid(
+      save_pred = TRUE,
+      save_workflow = TRUE
+   )
+
+
+grid_results <-
+   my_set %>%
+   workflow_map(
+      seed = 1503,
+      resamples = assessment_folds_mini,
+      grid = 25,
+      control = grid_ctrl,
+      verbose = TRUE
+   )
+
+
+num_grid_models <- nrow(collect_metrics(grid_results, summarize = FALSE))
+ 
+
+grid_results %>% 
+   rank_results() %>% 
+   filter(.metric == "rmse") %>% 
+   select(model, .config, rmse = mean, rank)
+
+
+
+```
+
+```{r}
+autoplot(
+   grid_results,
+   rank_metric = "rmse",  # <- how to order models
+   metric = "rmse",       # <- which metric to visualize
+   select_best = TRUE     # <- one point per workflow
+) +
+   geom_text(aes(y = mean - 1/2, label = wflow_id), angle = 90, hjust = 1) +
+   lims(y = c(3.5, 9.5)) +
+   theme(legend.position = "none")
+```
+
+
+
+```{r}
+library(finetune)
+
+assessment_folds <- 
+   vfold_cv(train, repeats=1, v=5)
+
+
+
+
+
+race_ctrl <-
+   control_race(
+      save_pred = TRUE,
+      parallel_over = "everything",
+      save_workflow = TRUE
+   )
+
+race_results <-
+   all_workflows %>%
+   workflow_map(
+      "tune_race_anova",
+      seed = 1503,
+      resamples = assessment_folds,
+      grid = 5,
+      control = race_ctrl,
+      verbose = TRUE
+   )
+
+```
+
+
+
+
+
+
+
+```{r}
+
+best_results <- 
+   grid_results %>% 
+   extract_workflow_set_result("normalized_linear_reg") %>% 
+   select_best(metric = "rmse")
+
+best_results
+
+best_results_fit <- 
+   grid_results %>% 
+   extract_workflow("normalized_linear_reg") %>% 
+   finalize_workflow(best_results) %>% 
+   last_fit(split = group)
+
+best_results_fit %>% 
+   collect_predictions() %>% 
+   ggplot(aes(x = ASSESSEDVALUE, y = .pred)) + 
+   geom_abline(color = "gray50", lty = 2) + 
+   geom_point(alpha = 0.5) + 
+   coord_obs_pred() + 
+   labs(x = "observed", y = "predicted")
+
+
+
+
+
+```
+
+
+
+```{r}
+initial_vals <- tune_grid(
+  resampled_data,
+  grid = 4,
+  metrics = ...,
+  param_info = ...
+)
+```
+
+
+
+```{r}
+ctrl <- control_bayes(verbose = TRUE)
+
+your_search <- 
+  your_workflow %>%
+  tune_bayes(
+    resamples = ...,
+    metrics = ...,
+    initial = initial_vals,
+    iter = 25,
+    control = ctrl
+  )
+```
