@@ -1,0 +1,1339 @@
+---
+title: "Detroit Final Project"
+author: "David Segovia"
+date: "3/31/2022"
+output: 
+  html_document: 
+    toc: yes
+  pdf_document: 
+    latex_engine: xelatex
+    toc: yes
+  word_document: 
+    toc: yes
+---
+
+
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+```
+
+
+```{r, include=FALSE, message = FALSE}
+#Packages
+library(tidyverse)
+library(lubridate)
+library(readxl)
+library(tidymodels)
+library(kableExtra)
+library(scales)
+library(devtools)
+library(ggResidpanel) # diagnostic plots
+
+library(tigris) # census
+library(tidycensus) #census
+library(leaflet) # map
+library(mapview)
+library(sf)
+library(htmlwidgets)
+library(htmltools)
+
+#### 
+library(xgboost)
+library(kernlab)
+library(finetune)
+
+
+
+#devtools::install_github("gavinrozzi/zipcodeR")
+
+library(corrplot) # correlation plots
+library(RColorBrewer) # correlation plots
+
+con <- DBI::dbConnect(RSQLite::SQLite(), "detroit.sqlite")
+
+```
+
+
+
+
+```{r, include=FALSE, message = FALSE}
+
+#### Sold houses data
+
+
+
+#detroitdata <- read_excel("OFFICE OF THE ASSESSORS_PROPERTY CLASSIFICATIONS -rev.xlsx") # property code classifications
+
+
+
+#sales <- dplyr::tbl(con, 'sales') %>% dplyr::collect() %>%
+ # mutate(sale_date = ymd(sale_date)) %>%
+ # mutate(SALE_YEAR = str_sub(sale_date, 1,4)) %>%
+  #  mutate(SALE_YEAR = as.character(SALE_YEAR))
+
+
+
+
+
+#assessments <- dplyr::tbl(con, 'assessments') %>% dplyr::collect() %>%
+ # mutate(year = as.character(year))
+
+
+#parcels <- dplyr::tbl(con, 'parcels')  %>% dplyr::collect() %>%  select(c(parcel_number, ward, address, zip_code, total_square_footage, total_acreage, frontage, depth, homestead_pre, is_improved, num_bldgs, total_floor_area, year_built, X, Y )) # only select variables I think is relevant
+
+
+#attributes <- dplyr::tbl(con, 'attributes')  %>% dplyr::collect() %>% select(c(parcel_num, Neighborhood, property_c, has_garage, has_basement, #bathcat))
+
+
+
+
+#foreclosures <- dplyr::tbl(con, 'foreclosures')  %>% dplyr::collect() %>%
+ #pivot_longer(cols = 3:20,
+  #            names_to = "Year", 
+  #         values_to = "Foreclosures") %>% 
+ # filter(Year > 2010) %>%
+  # mutate(Year = as.character(Year)) %>%
+ #mutate(Foreclosures = replace_na(Foreclosures,0)) 
+
+
+#sales_code <- left_join(sales, detroitdata, by = c("property_c" = "CODE"))
+
+
+
+#sales_code_parcels <- left_join(sales_code, parcels, by = c("parcel_num" = "parcel_number"))
+
+
+
+
+
+#sales_code_parcels_foreclosures <- left_join(sales_code_parcels, foreclosures, by = c("parcel_num"  = "prop_parcelnum", "SALE_YEAR" = "Year")) 
+
+
+
+#sales_code_parcels_foreclosures <- left_join(sales_code_parcels_foreclosures, attributes)
+
+
+
+#final_sales <- left_join(sales_code_parcels_foreclosures, assessments, by = c("parcel_num" = "PARCELNO", "SALE_YEAR" = "year", "property_c" = # "propclass"))
+
+#final_sales$sale_terms <- toupper(final_sales$sale_terms) # make everything upper, filter out VALID ARMS LENGTH
+
+#final_sales <- final_sales %>%
+ #filter(sale_terms == "VALID ARMS LENGTH",
+  #      property_c == "401",
+  #      ASSESSEDVALUE > 2000,
+   #    sale_price > 4000) %>% # 40,000 obs 
+ #mutate(Foreclosures = replace_na(Foreclosures,0))  %>%
+ #  mutate(Foreclosures = as.factor(Foreclosures))  # make factor
+
+#final_sales$SALE_YEAR <- as.double(final_sales$SALE_YEAR)
+
+
+
+#final_sales <-
+  #cmfproperty::reformat_data(
+ #  data = final_sales, 
+  # sale_col = "sale_price",
+  #  assessment_col = "ASSESSEDVALUE",
+  #  sale_year_col = "SALE_YEAR",
+ # )
+
+
+#blight <- dplyr::tbl(con, 'blight') %>% dplyr::collect() %>% 
+   # group_by(parcelno) %>% 
+ # summarize(TotalnumberOfTickets = n(), na.rm=TRUE) %>%
+  #select(-na.rm)
+
+
+
+
+ #final_sales <-  left_join(final_sales, blight, by = c("parcel_num" = "parcelno"))
+  
+ # final_sales <- final_sales %>% mutate(TotalnumberOfTickets = replace_na(TotalnumberOfTickets, 0)) # switch na to 0
+
+# acs <- load_variables(2019, "acs5") # American Community Survey
+
+
+# michigan2019 <- get_acs(geography = 'zcta', 
+                   # variables = c(medianincome = "B19013_001",
+                              #       totalpopulation = "B02001_001",
+                             #     white_alone = "B02001_002"),
+                    # state = "MI",
+                    #  year = 2019,
+                     # output = 'wide')
+
+
+
+# michigan2019  <- michigan2019 %>%
+ # mutate(
+ #   percent_white = (white_aloneE/totalpopulationE)*100
+ # ) %>%
+ # mutate(percent_nonwhite = (100-percent_white)) %>%
+ # select(GEOID, medianincomeE, percent_white, percent_nonwhite)
+
+
+
+# final_sales <- left_join(final_sales, michigan2019, by = c("zip_code" = "GEOID"))
+
+
+#write.csv(final_sales, "/Users/macbookair/Downloads/PA 470 AI & ML/Detroit Project/Detroit/final_sales.csv", row.names = FALSE)
+
+final_sales <- read_csv("final_sales.csv")
+
+#make factor
+
+final_sales$Foreclosures <- as.factor(final_sales$Foreclosures)
+final_sales$ward <- as.factor(final_sales$ward)
+final_sales$is_improved <- as.factor(final_sales$is_improved)
+final_sales$has_basement <- as.factor(final_sales$has_basement)
+final_sales$has_garage <- as.factor(final_sales$has_garage)
+
+
+#classification metric for 2016
+final_sales2016 <- final_sales %>%
+    filter(SALE_YEAR == "2016")
+  # na.omit(final_sales2016)
+  
+
+  
+final_sales2016 <- final_sales2016 %>%
+  mutate(overassessed= if_else(RATIO > median(final_sales2016$RATIO), "yes", "no")) %>% # classification, 0.51 is the median
+  mutate(overassessed = factor(overassessed), 
+         has_garage = factor(has_garage),
+         has_basement = factor(has_basement),
+         bathcat = factor(bathcat))  #make over-assessed, garage, basement, bathcat a factor
+
+
+```
+
+
+
+```{r, include=FALSE, message = FALSE}
+####### unsold houses dataset
+
+
+
+ #assessments <- left_join(assessments, parcels, by = c("PARCELNO" = "parcel_number"))
+
+
+ #assessments <- left_join(assessments, foreclosures, by = c("PARCELNO"  = "prop_parcelnum", "year" = "Year")) %>%
+ #    mutate(Foreclosures = replace_na(Foreclosures,0))  # make foreclosures 0
+# assessments$Foreclosures <- as.factor(assessments$Foreclosures) # make factor to merge later
+
+
+
+# assessments <- left_join(assessments, michigan2019, by = c("zip_code" = "GEOID"))
+
+
+
+
+# blight <- dplyr::tbl(con, 'blight') %>% dplyr::collect() %>% 
+ #   group_by(parcelno) %>% 
+  # summarize(TotalnumberOfTickets = n(), na.rm=TRUE) %>%
+  # select(-na.rm)
+ 
+# assessments <-  left_join(assessments, blight, by = c("PARCELNO" = "parcelno"))
+# assessments <- assessments %>% mutate(TotalnumberOfTickets = replace_na(TotalnumberOfTickets, 0)) # switch na to 0
+
+
+# assessments <- left_join(assessments, attributes, by = c("PARCELNO" = "parcel_num"))
+
+
+
+                
+# final_sales_filtered =  final_sales %>% select(parcel_num, SALE_PRICE, SALE_YEAR) # filter out just the sale price and year for each parcel
+
+
+# assessments$year <- as.double(assessments$year)
+
+
+
+
+ # assessments = left_join(assessments, final_sales_filtered, by = c("PARCELNO" = "parcel_num", "year" = "SALE_YEAR"))
+
+
+ # final_unsold <- 
+# assessments %>% 
+ # filter(is.na(SALE_PRICE), propclass == "401") # filter out the price with only na values for sale_price. In other words, homes that didn't sell
+
+#write.csv(final_unsold , "/Users/macbookair/Downloads/PA 470 AI & ML/Detroit Project/Detroit/final_unsold.csv", row.names = FALSE)
+
+final_unsold  <- read_csv("final_unsold.csv")
+final_unsold  <- final_unsold %>% filter( year < 2021) # to keep it consistent with sales data
+
+#make factor
+
+final_unsold$Foreclosures <- as.factor(final_unsold$Foreclosures)
+final_unsold$ward <- as.factor(final_unsold$ward)
+final_unsold$is_improved <- as.factor(final_unsold$is_improved)
+final_unsold$has_basement <- as.factor(final_unsold$has_basement)
+final_unsold$has_garage <- as.factor(final_unsold$has_garage)
+
+
+
+
+```
+
+
+
+
+
+```{r, include=FALSE, message = FALSE}
+
+### now, let's get census tracts for each parcel to map later
+
+
+mi19 <- get_acs(geography = "tract", 
+              variables = c(medincome = "B19013_001",
+                            totalpop = "B02001_001",
+                            white_alone = "B02001_002",
+                            black_alone = "B02001_003",
+                            asian_alone = "B02001_004"),
+              state = "MI", 
+              year = 2019,
+              output='wide')
+
+
+
+
+mi19 <- mi19 %>% mutate(
+  pct_white = white_aloneE / totalpopE,
+  pct_black = black_aloneE / totalpopE,
+  pct_asian = asian_aloneE / totalpopE
+)
+
+
+
+mitracts <- tigris::tracts(state='26', year=2019, cb=TRUE)
+
+wayne_tracts <- mitracts %>% left_join(
+  mi19 %>% select(GEOID, pct_white, totalpopE, medincomeE)
+) %>% filter(COUNTYFP == '163') #wayne
+
+
+
+micountysub <- tigris::county_subdivisions(state=26, county=163, cb=TRUE) 
+
+detroit <- micountysub %>% filter(NAME == "Detroit") %>% select(region=NAME)
+
+
+detroit_tracts <- wayne_tracts %>% st_intersection(
+  detroit
+)
+
+
+
+
+### now, find GEOID for each parcel
+
+targ_geo <- tbl(con, 'attributes') %>% 
+  filter(property_c == 401) %>%
+  select(parcel_num, Longitude, Latitude) %>%
+  collect() %>%
+  filter(!is.na(Latitude)) %>%
+  st_as_sf(coords=c("Longitude", "Latitude"))
+
+st_crs(targ_geo) <- st_crs(detroit_tracts)
+
+parcel_geo <- targ_geo %>% st_join(detroit_tracts, join=st_intersects) %>%
+  as.data.frame() %>%
+  select(parcel_num, GEOID)
+
+## finally, merge this with both sales and unsold data
+
+final_unsold <- left_join(final_unsold, parcel_geo, by = c("PARCELNO" = "parcel_num"))
+final_sales <- left_join(final_sales, parcel_geo)
+
+
+```
+
+
+
+```{r, include=FALSE, message = FALSE}
+
+### finally, let's call in cmfproperty() to create the graphs.
+
+stats <- cmfproperty::calc_iaao_stats(final_sales)
+
+
+iaao_detroit <- cmfproperty::iaao_graphs(
+  stats, 
+ final_sales,
+  min_reporting_yr = 2011,
+  max_reporting_yr = 2020,
+  jurisdiction_name = "Detroit, Michigan"
+)
+
+
+
+output <- cmfproperty::diagnostic_plots(stats,
+                         final_sales,
+                        min_reporting_yr = 2011,
+                          max_reporting_yr = 2020)
+
+
+```
+
+
+
+
+
+
+# Introduction
+
+
+Detroit, Michigan has experienced over-assessment inaccuracy for years and this has hit the lowest-valued homes the hardest. Inequitable assessment has led to regressive taxation, meaning that the government has collected a larger share of taxes among low-valued households compared to high-valued households in Michigan. The reasoning for this is because the lowest-valued households have higher sales ratio values compared to high-value households, meaning that the assessed value is significantly higher compared to the actual sales price for low-valued households. 
+
+Thus, this report will examine property assessment in Detroit, Michigan and use classification machine learning algorithm to classify a property either over-assessed or not over-assessed in 2016. It will also predict 2019 home prices. 
+
+A property will be classified as over-assessed if the sales ratio is above the median sales ratio of Detroit in 2016, which is 0.51. 
+
+
+```{r}
+#salesratio
+lm2 <- lm(log(ASSESSED_VALUE)  ~ log(SALE_PRICE), data = final_sales)
+
+stargazer::stargazer(lm2, type = "text")
+
+```
+
+
+*This is a simple regression of the log of assessed value (AV) against the log of sales price. The coefficient on sale price should be 1.  However, this is not the case. It is less than 1, which indicates regressivity because assessment value decreases for higher valued sale prices. The interpretation here is for every 1% increase in sales price, assessed value decreases by 0.31%. This is statistically significant at the .01 level. *
+
+
+```{r}
+glm1 <- glm(Foreclosures ~ RATIO, data = final_sales, family = binomial)
+
+
+stargazer::stargazer(glm1, type = "text")
+```
+
+*The second regression estimates the effect of the sales ratio on foreclosures(bi-variate, 0 = no and 1 = yes ) . The results indicate that a one unit increase in the sales ratio (ASSESSED VALUE/PRICE) is associated with a 1.080 change in log odds of foreclosure.* 
+
+
+```{r}
+table1 <- final_sales %>% group_by(SALE_YEAR) %>% summarize(
+  TotalArmLengthSales = sum(arms_length_transaction),
+  MedianSalePrice = median(SALE_PRICE),
+  MEDIANASSESSEDVALUE = median(ASSESSED_VALUE)
+)
+
+
+
+DT::datatable(table1,
+     colnames = c(  'Year',  'Total Arm Length Sales', 'Median Sale Price', 'Median Assessment Value'))
+
+```
+
+*This table shows that total arm length sales has increased since 2011 ( with the exception of 2020 due to the pandemic). However, assessment has been steadily declining from 2012-2018 and slightly went up in 2019 and 2020. Median Sale Price has been steadily going up since 2015.*
+
+
+```{r}
+final_sales %>% group_by(SALE_YEAR) %>% summarize(medianprice = median(SALE_PRICE, na.rm=TRUE)) %>% 
+  
+  ggplot(aes(x = SALE_YEAR, y=medianprice, group=1)) +
+  geom_line() +geom_point() + 
+  scale_x_continuous(breaks = c(2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020)) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+
+  labs(
+    x = "Year",
+    y = "Median Sales Price",
+    title = "Median Sales Price in Michigan 2011-2020"
+  ) + 
+  
+  theme_classic() 
+  
+```
+*This graph shows that median sale price has gone up since 2015.*
+
+
+
+
+```{r}
+final_sales %>% group_by(SALE_YEAR) %>% summarize(medianassessed = median(ASSESSED_VALUE,na.rm=TRUE)) %>% 
+  
+  ggplot(aes(x = SALE_YEAR, y=medianassessed, group=1)) +
+  geom_line() +geom_point() + geom_point() +
+
+scale_x_continuous(breaks = c(2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020)) +
+  
+scale_y_continuous(labels = scales::dollar_format()) + 
+  
+  labs(
+    x = "Year",
+    y = "Median Assessment Value",
+    title = "$$ Assessment Value in Michigan 2011-2020"
+  ) + 
+  theme_classic()
+
+
+```
+
+*However, median sales assessment value has decreased, except the trend has been going up slightly since 2017.The key insight here is that assessment does not mirror sales price. *
+
+
+```{r}
+final_sales %>% filter(Foreclosures == "1") %>%
+  group_by(SALE_YEAR, Foreclosures) %>% summarize(totalforeclosures = n()) %>%
+
+  
+  ggplot(aes(x = SALE_YEAR, y=totalforeclosures, group=1)) +
+  geom_col()  + 
+  
+scale_x_continuous(breaks = c(2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020)) +
+  
+  
+  labs(
+    x = "Year",
+    y = "# of foreclosures",
+    title = "# of foreclosures in Michigan 2011-2020"
+  ) + 
+  
+  theme_classic()
+
+```
+
+*Foreclosures has also had a fluctuating trend, with a slight drop in 2020 because they were halted due to the pandemic. *
+
+
+
+```{r}
+iaao_detroit[2]
+```
+
+
+*The Coefficient of Dispersion (COD) is the average absolute percentage difference from the median sales ratio. For example, a COD of 15 means that properties have sales ratios that deviate by around 15% from the median ratio. An acceptable range is below 15, as seen in the shaded region, but as we can see from the graph, the COD is way above 15. In 2020, it was 40. While this is decreasing, it still has a long road for improvement. In 2019, the COD was 43.1170. We will see if our model beats this number of 43.11*
+
+
+```{r}
+options(scipen = 10)
+hist(final_sales$SALE_PRICE,
+  xlab = "Price",
+  main = "Histogram of sales price",
+  breaks = sqrt(nrow(final_sales))
+) # set number of bins
+
+```
+*There are also outliers with sale prices. This histogram shows that prices are skewed to the right. The boxplot below also displays the outliers.*
+
+
+
+
+# model classification(2016)
+
+
+
+
+```{r}
+final_unsold2016 <- final_unsold   %>%
+    filter(year == "2016")  # homes that didn't sell in 2016. We will run an out of sample prediction later after we test our model on homes that sold in 2016
+
+
+
+
+
+group <- rsample::initial_split(final_sales2016) 
+train <- training(group)
+test <- testing(group)
+
+
+
+assessment_folds_mini <- 
+   vfold_cv(train, repeats=1, v=3) # split into folds of 3.
+
+
+logistic_model <- 
+  logistic_reg(penalty = 0.1) %>%
+  set_engine('glm') %>%
+  set_mode('classification') # logistic model, classification
+
+
+### recipe
+overassessed_rec <- recipe(overassessed ~ total_square_footage + is_improved + Foreclosures + has_garage + has_basement + total_floor_area + year_built  + TotalnumberOfTickets + medianincomeE + percent_nonwhite + ward, data = train) %>% 
+  
+  step_mutate(ward = factor(ward))   %>%        # factor variable for ward
+
+  
+  step_mutate(is_improved = factor(is_improved)) %>%       # factor variable for is improved
+  
+    step_mutate(has_garage = factor(has_garage)) %>%       # factor variable for garage
+  
+   step_mutate( has_basement = factor( has_basement)) %>%  # factor variable for basement
+  
+  step_mutate(Foreclosures = factor(Foreclosures)) %>%       # factor variable for foreclosure
+  
+  step_dummy(all_nominal_predictors()) %>%       #converts categorical to dummy variables.
+  
+ step_unknown(all_nominal_predictors())  %>%   # sets missing values in factors as unknown. 
+  
+    step_corr(all_predictors()) %>%
+  
+   step_impute_mean(total_square_footage, total_floor_area,TotalnumberOfTickets, medianincomeE, percent_nonwhite, year_built)
+
+
+
+### recipe
+
+overassessed_workflow <- 
+  workflow() %>%
+  add_model(logistic_model) %>%
+  add_recipe(overassessed_rec)
+
+
+
+
+overassessed_fit <- overassessed_workflow %>%
+  fit(data = train)
+
+
+
+sold_overassessed_preds <- 
+  augment(overassessed_fit, new_data = test)
+
+
+
+```
+
+```{r}
+### evaluate model
+
+DT::datatable(roc_auc(sold_overassessed_preds,
+        truth = overassessed,
+        estimate = .pred_no))  #0.53
+
+
+roc_curve(sold_overassessed_preds,
+        truth = overassessed,
+        estimate = .pred_no) %>%
+  autoplot() # looks OK
+
+
+DT::datatable(accuracy(sold_overassessed_preds,
+        truth = overassessed,
+        estimate = .pred_class))  #0.52 
+
+
+
+
+DT::datatable(specificity(sold_overassessed_preds, # the proportion of homes classified as not over-assessed out of all "not over-assessed homes. This is the TRUE FALSE. This is 0.64, so my model does a decent job in predicting which homes will not be over-assessed
+        truth = overassessed,
+        estimate = .pred_class))
+
+
+DT::datatable(sensitivity(sold_overassessed_preds, # proportion of predicted "over-assessed" homes out of "over-assessed" loans. This is 0.42, a little bad
+        truth = overassessed,
+        estimate = .pred_class))
+
+
+conf_mat(sold_overassessed_preds,
+        truth = overassessed,
+        estimate = .pred_class) %>%
+  autoplot("heatmap")
+
+```
+
+Results 
+
+1) The area under the ROC curve is 0.55.
+
+2) The accuracy estimate is 0.52
+
+3) Specificity estimate is 0.64
+
+4) Sensitivity estimate is 0.42
+
+5) Looking at the heatmap,
+
+
+210 is true not over-assessed (sensitivity)
+
+305 is true over-assessed (specificity)
+
+287 is false over-assessment. This means the property was classified as over-assessed even though it was not over-assessed. 
+
+```{r}
+sold_overassessed_preds %>%
+  filter(overassessed == "no" & .pred_class == "yes") %>%
+  nrow()
+```
+
+
+171 is false not over-assessment, meaning the property was classified as not over-assessed even though it was over-assessed.
+
+
+```{r}
+
+sold_overassessed_preds %>%
+  filter(overassessed == "yes" & .pred_class == "no") %>%
+  nrow()
+
+
+```
+
+```{r}
+### out of sample prediction for homes that didn't sell in 2016
+unsold_overassessed_preds <-
+  augment(overassessed_fit, final_unsold2016)
+ 
+unsold_overassessed_preds %>% count(.pred_class)  %>%
+  kableExtra::kable() %>%
+  kableExtra::kable_material(c("striped", "hover"))
+
+
+```
+
+
+
+
+
+
+*Map showing percent over-assessed by census tract*
+
+```{r}
+overassessment_percent <- unsold_overassessed_preds %>% group_by(GEOID) %>%
+  summarize(
+    pct_over = sum(.pred_class == 'yes') / n(),
+    size = n()
+  ) %>%
+  filter(!is.na(GEOID))
+
+
+
+
+
+detroit_tracts = left_join(detroit_tracts, overassessment_percent)
+
+
+detroit_tracts$pct_nonwhite = 1- detroit_tracts$pct_white 
+testmap <- detroit_tracts
+
+
+
+
+
+pal1 <-
+  colorNumeric(
+    palette = "Blues",
+    domain = detroit_tracts$pct_over,
+    na.color = rgb(0,0,0,0)
+  )
+
+
+
+label_str <- str_glue("<strong>Tract %s</strong><br>Pct of Over-assessment : %s<br/>")
+
+labels <- sprintf(label_str,
+                detroit_tracts$NAME,
+                percent(detroit_tracts$pct_over, accuracy = .1)) %>% 
+  lapply(htmltools::HTML)
+
+
+
+
+leaflet() %>%
+  addTiles() %>% addPolygons(
+    data = detroit_tracts,
+    fillColor = ~ pal1(pct_over),
+    weight = 0.5,
+    opacity = 0.5,
+    color = "white",
+    dashArray = 3,
+    fillOpacity = 0.7,
+    highlight = highlightOptions(
+      weight = 5,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 0.7,
+      bringToFront = TRUE
+    ),
+    label = labels,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto"
+    )
+  ) %>%
+  addLegend(
+    pal = pal1,
+    values = detroit_tracts$pct_over,
+    opacity = 0.7,
+    title = "Percent over-assessed",
+    position = "bottomright",
+    na.label = ""
+  ) 
+
+
+```
+
+```{r}
+
+pal2 <-
+  colorNumeric(
+    palette = "Blues",
+    domain = detroit_tracts$pct_nonwhite,
+      na.color = rgb(0,0,0,0)
+  )
+
+
+
+label_str2 <- str_glue("<strong>Tract %s</strong><br>Pct Non-White : %s<br/>")
+
+labels2 <- sprintf(label_str2,
+                detroit_tracts$NAME,
+                percent(detroit_tracts$pct_nonwhite, accuracy = .1)) %>% 
+  lapply(htmltools::HTML)
+
+
+
+
+leaflet() %>%
+  addTiles() %>% addPolygons(
+    data = detroit_tracts,
+    fillColor = ~ pal2(pct_nonwhite),
+    weight = 0.5,
+    opacity = 0.5,
+    color = "white",
+    dashArray = 3,
+    fillOpacity = 0.7,
+    highlight = highlightOptions(
+      weight = 5,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 0.7,
+      bringToFront = TRUE
+    ),
+    label = labels2,
+    labelOptions = labelOptions(
+      style = list("font-weight" = "normal", padding = "3px 8px"),
+      textsize = "15px",
+      direction = "auto"
+    )
+  ) %>%
+  addLegend(
+    pal = pal2,
+    values = detroit_tracts$pct_nonwhite,
+    opacity = 0.7,
+    title = "Percent Non-White",
+    position = "bottomright",
+     na.label = ""
+  ) 
+
+```
+
+*Census tracts with high levels of over-assessment have a large number of non-white population and low levels of over-assessment have low numbers of non-white population*
+
+
+
+```{r}
+filtered_correlation = unsold_overassessed_preds %>%
+  select(.pred_yes, total_square_footage, total_acreage, frontage, depth, medianincomeE, percent_nonwhite, TotalnumberOfTickets) %>% 
+  na.omit(.pred_yes)
+
+
+correlation <-cor(filtered_correlation)
+
+
+
+
+corrplot(correlation, type="upper", order="hclust",
+         col=brewer.pal(n=8, name="RdYlBu"))
+
+```
+
+
+*Positive correlation between the probability of predicting yes (over-assessment) and the percent non-white. A negative correlation between median income and predicting yes(over-assessment)*
+
+
+I will now explore hyperparameter Exploration for my Classification model.
+
+
+```{r, include=FALSE, message=FALSE}
+sales_2016_filtered = final_sales2016 %>%
+  na.omit() # remove missing values for the houses that sold in 2016. I have been having trouble running the tune_grid and tune_bayes without taking care of this.
+
+###
+
+group3 <- rsample::initial_split(sales_2016_filtered) 
+train3 <- training(group3)
+test3 <- testing(group3)
+
+assessment_folds_mini3 <- 
+   vfold_cv(train3, repeats=1, v=3) # split into folds of 3.
+
+
+classification_model <- 
+  svm_rbf(cost = tune(), rbf_sigma = tune()) %>% 
+  set_engine("kernlab") %>% 
+  set_mode("classification") # support vector machine with Radial Basis Function
+
+
+###
+
+### simple recipe, removed categorical variables from original recipe.
+simple_overassessed_rec <- recipe(overassessed ~ total_square_footage + total_floor_area + TotalnumberOfTickets + medianincomeE + percent_nonwhite + year_built, data = train3) %>% 
+  
+ #step_mutate(ward = factor(ward))   %>%        # factor variable for ward
+
+  
+  #step_mutate(is_improved = factor(is_improved)) %>%       # factor variable for is improved
+  
+    #step_mutate(has_garage = factor(has_garage)) %>%       # factor variable for garage
+  
+   #step_mutate( has_basement = factor( has_basement)) %>%  # factor variable for basement
+  
+  #step_mutate(Foreclosures = factor(Foreclosures)) %>%       # factor variable for foreclosure
+
+  
+  #step_mutate(is_improved = factor(is_improved)) %>%       # factor variable for is improved
+  
+ # step_mutate(Foreclosures = factor(Foreclosures)) %>%       # factor variable for foreclosure
+
+  
+  step_dummy(all_nominal_predictors()) %>%        #converts categorical to dummy variables.
+  
+step_YeoJohnson(all_numeric_predictors()) %>% 
+  step_normalize(all_numeric_predictors()) %>% 
+  step_pca(all_numeric_predictors()) %>% 
+  step_normalize(all_numeric_predictors())
+
+### 
+
+
+
+overassessed_workflow <- 
+  workflow() %>%
+  add_model(classification_model) %>%
+  add_recipe(simple_overassessed_rec)
+
+overassessed_param <- 
+  overassessed_workflow %>% 
+  extract_parameter_set_dials() %>% 
+  update(rbf_sigma = rbf_sigma(c(-7, -1)))
+
+
+start_grid <- 
+  overassessed_param %>% 
+  update(
+    cost = cost(c(-6, 1)),
+    rbf_sigma = rbf_sigma(c(-6, -4))
+  ) %>% 
+  grid_regular(levels = 2)
+
+
+
+initial_vals <- overassessed_workflow %>%
+  tune_grid(
+    resamples = assessment_folds_mini3,
+    grid = start_grid,
+    metrics = metric_set(roc_auc)
+  )
+
+
+ctrl <- control_bayes(verbose = TRUE)
+
+model_search <- 
+  overassessed_workflow %>%
+  tune_bayes(
+    resamples = assessment_folds_mini,
+    metrics = metric_set(roc_auc),
+    initial = initial_vals,
+    iter = 25,
+    control = ctrl
+  )
+
+
+
+
+
+
+```
+
+
+
+```{r}
+show_best(model_search)  %>% kableExtra::kable() %>%
+  kableExtra::kable_material(c("striped", "hover"))
+
+```
+
+
+*After tuning the hyperparameters for my classification model, the best model has an area under the Receiver Operating Characteristic Curve (ROC) of 0.51.* 
+
+
+
+# model assessment(2019)
+
+Now, I will be predicting home price for homes that did not sell in 2019.
+
+
+```{r}
+# Filter out  for 2019, sold and unsold
+final_unsold2019 <- final_unsold  %>%
+  filter(year == "2019")    #199,565 homes didn't sell
+
+final_sales2019 <- final_sales  %>%
+  filter(SALE_YEAR == "2019")  # 6,592 homes sold 
+
+```
+
+```{r}
+group2 <- rsample::initial_split(final_sales2019) # test the data on houses that sold in 2019
+train2 <- training(group2)
+test2 = testing(group2)
+
+
+assessment_folds_mini2 <- 
+   vfold_cv(train2, repeats=1, v=3) # split into folds of 3.
+
+
+
+
+tree_model <-
+  parsnip::decision_tree(tree_depth=5) %>%
+  set_engine("rpart") %>%
+  set_mode('regression') 
+
+
+
+price_rec <- recipe(SALE_PRICE ~ total_square_footage + is_improved + Foreclosures + has_garage + has_basement + total_floor_area + year_built  + TotalnumberOfTickets + medianincomeE + percent_nonwhite + ward, data = train2) %>% 
+  
+  step_mutate(ward = factor(ward))   %>%        # factor variable for ward
+
+  
+  step_mutate(is_improved = factor(is_improved)) %>%       # factor variable for is improved
+  
+   step_mutate(has_garage = factor(has_garage)) %>%       # factor variable for garage
+  
+   step_mutate( has_basement = factor( has_basement)) %>%  # factor variable for basement
+  
+  step_mutate(Foreclosures = factor(Foreclosures)) %>%       # factor variable for foreclosure
+  
+  step_dummy(all_nominal_predictors()) %>%       #converts categorical to dummy variables.
+  
+ step_unknown(all_nominal_predictors())  %>%   # sets missing values in factors as unknown. 
+  
+    step_corr(all_predictors()) %>%
+  
+   step_impute_mean(total_square_footage, total_floor_area,TotalnumberOfTickets, medianincomeE, percent_nonwhite, year_built)
+
+
+
+price_workflow <-
+  workflow() %>%
+  add_model(tree_model) %>%
+  add_recipe(price_rec)
+
+price_fit <- price_workflow %>%
+  fit(data=train2)
+
+
+sold_price_preds <- 
+  augment(price_fit, test2)
+
+
+### evaluate model
+
+DT::datatable(yardstick::rmse(
+ sold_price_preds,
+  truth = SALE_PRICE,
+  estimate = .pred
+)) 
+ # root mean square error. How far predicted values are from actual values in regression analysis. This is 40,829.
+
+
+```
+
+```{r}
+tree_fit <- price_fit  %>% 
+  extract_fit_engine()
+
+
+rpart.plot::rpart.plot(tree_fit)
+```
+
+*The most important factors in our decision tree model for assessing properties is whether the property is located in ward #2. The second most important factor is the total floor area, total square footage, median income, and whether property has had interior improvement.*
+
+
+
+
+```{r}
+### out of sample prediction for homes that didn't sell in 2019
+
+unsold_price_preds <-
+  augment(price_fit, final_unsold2019)
+
+
+```
+
+
+*NEW ASSESSMENT MODELS*
+
+
+```{r,include=FALSE, message=FALSE}
+## Linear regression, boosted tree, and decision tree for screening
+
+
+linear_reg_spec <- 
+   linear_reg(penalty = tune(), mixture = tune()) %>% 
+   set_engine("glmnet")
+#linear_reg = linear_reg_spec ✓
+   
+
+   
+xgb_spec <- 
+   boost_tree(tree_depth = tune(), learn_rate = tune(), loss_reduction = tune(), 
+             min_n = tune(), sample_size = tune(), trees = tune()) %>% 
+   set_engine("xgboost") %>% 
+   set_mode("regression")
+
+   #boosted = xgb_spec   ✓
+
+
+ cart_spec <- 
+   decision_tree(cost_complexity = tune(), min_n = tune()) %>% 
+   set_engine("rpart") %>% 
+   set_mode("regression")
+
+
+
+my_set <- workflow_set(
+  preproc =  list(normalized = price_rec), 
+  models = list(decision_tree= cart_spec, linear_reg = linear_reg_spec, boosted = xgb_spec)
+)
+
+
+
+```
+
+
+
+```{r, include=FALSE, message=FALSE}
+
+
+grid_ctrl <-
+   control_grid(
+      save_pred = FALSE,
+      save_workflow = FALSE
+   )
+
+
+
+grid_results <-
+   my_set %>%
+   workflow_map(
+      seed = 1503,
+      resamples = assessment_folds_mini2,
+      grid = 5,
+      control = grid_ctrl,
+      verbose = FALSE
+   )
+
+  
+
+```
+
+
+```{r}
+ nrow(collect_metrics(grid_results, summarize = FALSE)) # 90 models
+ 
+
+grid_results %>% 
+   rank_results() %>% 
+   filter(.metric == "rmse") %>% 
+   select(model, .config, rmse = mean, rank) %>%
+    kableExtra::kable() %>%
+  kableExtra::kable_material(c("striped", "hover"))
+
+
+```
+
+
+
+```{r}
+autoplot(
+   grid_results,
+   rank_metric = "rmse",  # <- how to order models
+   metric = "rmse",       # <- which metric to visualize
+   select_best = TRUE     # <- one point per workflow
+) + geom_text(aes(y = mean - 1/2, label = wflow_id), angle = 90, hjust =-0.6, size = 3.5) 
+  
+
+```
+
+*The best model from the grid results is the boosted tree with a Root Mean Square Error (RMSE) of ~30-32K.*
+
+
+```{r, include=FALSE, message=FALSE}
+
+race_ctrl <-
+   control_race(
+      save_pred = TRUE,
+      parallel_over = "everything",
+      save_workflow = FALSE
+   )
+
+race_results <-
+  my_set %>%
+   workflow_map(
+      seed = 1503,
+      resamples = assessment_folds_mini2,
+      grid = 5,
+      control = grid_ctrl,
+      verbose = FALSE
+   )
+
+
+
+
+```
+
+
+```{r}
+
+race_results %>% 
+   rank_results() %>% 
+   filter(.metric == "rmse") %>% 
+   select(model, .config, rmse = mean, rank) %>% # boosted tree again has lowest RMSE 
+    kableExtra::kable() %>%
+  kableExtra::kable_material(c("striped", "hover"))
+
+
+
+
+
+
+
+
+```
+
+
+```{r}
+autoplot(
+   race_results,
+   rank_metric = "rmse",  
+   metric = "rmse",       
+   select_best = TRUE    
+) # boosted tree
+```
+
+
+
+*We get the same thing with race results. Boosted tree is our preferred model*.
+
+
+```{r}
+best_results <- 
+   grid_results %>% 
+   extract_workflow_set_result("normalized_boosted") %>% 
+   select_best(metric = "rmse")
+
+#best_results <- 
+   #race_results %>% 
+   #extract_workflow_set_result("normalized_random_forest") %>% 
+   #select_best(metric = "rmse")
+
+
+
+
+best_results_fit <- 
+   grid_results %>% 
+   extract_workflow("normalized_boosted") %>% 
+   finalize_workflow(best_results) %>% 
+   last_fit(split = group2)
+
+best_results_fit %>% 
+   collect_predictions() %>% 
+   ggplot(aes(x = SALE_PRICE, y = .pred)) + 
+   geom_abline(color = "gray50", lty = 2) + 
+   geom_point(alpha = 0.5) + 
+   coord_obs_pred() + 
+   labs(x = "observed", y = "predicted")
+
+
+```
+
+*There seems to be a lot of clustering for homes less than ~100K. My model doesn't do a very job predicting home prices.* 
+
+
+
+
+
+
+```{r,include=FALSE, message=FALSE}
+best_results
+
+### change the hyper-parameters based on above
+boosted_tree <- 
+   boost_tree(tree_depth = 5, learn_rate = 0.002577403, loss_reduction = 4.786734e-10	, 
+             min_n = 5, sample_size = 0.2800365, trees = 1846) %>% 
+   set_engine("xgboost") %>% 
+   set_mode("regression")
+
+
+
+price_workflow2 <-
+  workflow() %>%
+  add_model(boosted_tree) %>%
+  add_recipe(price_rec)
+
+price_fit2 <- price_workflow2 %>%
+  fit(data=train2)
+
+### out of sample prediction for all houses unsold, 2011-2020
+
+final_predictions <-
+  augment(price_fit2, final_unsold)
+
+
+
+salesratio2 <-
+  cmfproperty::reformat_data(
+   data = final_predictions, 
+   sale_col = ".pred",
+    assessment_col = "ASSESSEDVALUE",
+    sale_year_col = "year",
+  )
+
+
+stats2 <- cmfproperty::calc_iaao_stats(salesratio2)
+
+
+
+iaao_detroit2 <- cmfproperty::iaao_graphs(
+  stats2, 
+  salesratio2,
+  min_reporting_yr = 2011,
+  max_reporting_yr = 2020,
+  jurisdiction_name = "Detroit, Michigan"
+)
+
+
+
+
+
+```
+
+
+```{r}
+iaao_detroit2[2] # COD = 19.365 in 2019, compared to around ~ 40 from original model in 2019. I would argue that yes, we should use this model at least until we can get the COD down to at least to 15, which is the acceptable range.
+
+```
+
+
+
+
+*After adjusting the hyper-parameters for the  boosted tree model based on the best_model results, I conducted a final out of sample prediction for all houses unsold in the dataset from 2011-2019. The Coefficient of Dispersion in 2019 is 19.18, which is almost within the targeted range of 5-15. *
+
+
+
+# conclusion
+
+In conclusion, I think that my models do a fairly okay job in predicting over-assessment and the price of homes based on the variables in our recipe. It is important to keep in mind that assessment values in Detroit, Michigan at the moment hit low-value, communities of color the most. The Coefficient of Dispersion for homes in Detroit that sold between 2011-2019 is slightly above 40. In 2019 specifically, the value was 43.11. However, the target range is between 5-15, so there is a long way to go for improvement.
+
+For my initial classification model in 2016, I created a recipe that predicts over-assessment for homes that sold in 2016 and included a bunch of variables in my recipe, which were total square footage of a footage, whether the house has internal improvement, whether it foreclosed, whether it has a garage, basement, total number of tickets, median income, percent non-white in the census tract, and ward. I dealt with the missing values within the recipe by imputing the mean.  My model was a support vector machine Radial Basis Function classification model.So my initial results gave me an area under the ROC curve of 0.55 and accuracy of 0.52. 119K homes were classified as over-assessed, 68K were classified as under-assessed, and I had 59K NA values.  Just looking at the map, it’s clear that have a high percentage of over-assessment are located in the North-west region of Detroit and low percentage of over-assessment are located in the South(East) region of Detroit. Looking at my second map, it seems like these areas also have a high percentage of non-white population, but in areas with low levels of non-white population, it seems like over-assessment percentage values are lower. When I added the hyperparameter exploration for my model, the area under the ROC curve was 0.51, so something happened here. I would assume this happened because I change my recipe.
+
+For my model assessment in 2019, I used the same variables from the classification model and the same recipe except for the dependent variable, which was sale price. I performed the training on houses that sold, and then performed an out of sample prediction for homes that didn’t sell in 2019.  My model for this assesment was a decision tree with a tree depth of 5. The initial Root mean Square Error  (RMSE) was 40,829. After tuning and exploring the different models using grid_results() and race_results() for boosting tree, linear regression, and decision tree, the best model I got was a boosted tree with a RMSE of 30,530. Finally, after changing the model I used to boosted tree and changing the hyper-parameters based on the values from best_results, and then performing a final prediction for homes that didn’t sell, I received a COD of almost 19.365 in 2019.
+
+Whether we should use this model, I would probably recommend not do use it. I know that the COD is pretty low in 2019, but the RMSE score is almost 30K, not to mention that there were a missing values within the model itself. Also, my classification model had an area under the ROC curve of 0.5 and accuracy of 0.52, which is below the acceptable range of 0.7. So while out model does reduce the COD, I wouldn’t recommend using my model for the specified reasons. 
